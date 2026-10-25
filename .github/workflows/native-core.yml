@@ -1,4 +1,4 @@
-name: Native Core M1 Probe
+name: Native Apps M1 Verification
 on:
   push:
     branches: ["codex/native-rust-m0-m1"]
@@ -12,7 +12,7 @@ concurrency:
 jobs:
   rust-kotlin-android:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
         with:
@@ -30,22 +30,37 @@ jobs:
         with:
           gradle-version: "8.11.1"
           cache-disabled: true
-      - name: Kotlin to real Rust shared-library tests (JVM, not Android device)
+      - name: Kotlin calls actual Rust library on JVM
         run: gradle -p native/tests/kotlin --no-daemon test
-      - name: Compile Android arm64 native library (not app or device test)
-        working-directory: native
-        shell: bash
+      - name: Build Android libraries and Compose application
+        run: bash native/scripts/build-android.sh
+      - name: Enable KVM for the isolated emulator
         run: |
-          rustup target add aarch64-linux-android
-          ndk="${ANDROID_NDK_LATEST_HOME:-${ANDROID_NDK_HOME:-}}"
-          linker="$ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang"
-          test -x "$linker" || { echo "Android NDK linker unavailable"; exit 2; }
-          cat "$ndk/source.properties"
-          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$linker"
-          cargo build --release --lib -p vcp-mobile-native-core --target aarch64-linux-android
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Compose UI to Rust on Android emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          disable-animations: true
+          script: gradle -p native/apps/android --no-daemon :app:connectedDebugAndroidTest
+      - name: Save bounded synthetic evidence and development APK
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-android-${{ github.sha }}
+          retention-days: 1
+          path: |
+            native/Cargo.lock
+            native/tests/kotlin/build/test-results/test/*.xml
+            native/apps/android/app/build/outputs/apk/debug/*.apk
+            native/apps/android/app/build/outputs/androidTest-results/connected/**/*.xml
   rust-swift-ios:
     runs-on: macos-latest
-    timeout-minutes: 25
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
         with:
@@ -55,13 +70,24 @@ jobs:
         run: rustup toolchain install 1.90.0 --profile minimal --component clippy,rustfmt
       - name: Test core and generate actual bindings
         run: bash native/scripts/check.sh
-      - name: Swift to real Rust shared-library tests (macOS, not iOS simulator)
+      - name: Swift calls actual Rust library on macOS
         run: bash native/tests/swift/run.sh
-      - name: Compile iOS device and simulator Rust libraries (not app tests)
-        working-directory: native
+      - name: Ensure XcodeGen is available
+        run: command -v xcodegen || brew install xcodegen
+      - name: SwiftUI application to Rust on iOS simulator
+        run: bash native/scripts/test-ios.sh
+      - name: Export simulator test summary
+        if: always()
         run: |
-          xcodebuild -version
-          xcrun swiftc --version
-          rustup target add aarch64-apple-ios aarch64-apple-ios-sim
-          cargo build --release --lib -p vcp-mobile-native-core --target aarch64-apple-ios
-          cargo build --release --lib -p vcp-mobile-native-core --target aarch64-apple-ios-sim
+          if [ -d native/target/ios-ui.xcresult ]; then
+            xcrun xcresulttool get test-results summary --path native/target/ios-ui.xcresult > native/target/ios-ui-summary.json
+          fi
+      - name: Save bounded synthetic iOS evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-ios-${{ github.sha }}
+          retention-days: 1
+          path: |
+            native/Cargo.lock
+            native/target/ios-ui-summary.json
