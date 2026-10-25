@@ -46,17 +46,7 @@ jobs:
           target: google_apis
           arch: x86_64
           disable-animations: true
-          script: |
-            # Preserve the full test suite; bound emulator stalls and capture
-            # synthetic device diagnostics rather than running 35 minutes.
-            set +e
-            timeout --signal=TERM --kill-after=20s 480s gradle -p native/apps/android --no-daemon :app:connectedDebugAndroidTest
-            result=$?
-            set -e
-            mkdir -p native/target/evidence
-            (adb logcat -d -s AndroidJUnitRunner:I TestRunner:I AndroidRuntime:E '*:S' 2>/dev/null | tail -n 220 > native/target/evidence/android-emulator-logcat.txt) || true
-            printf 'connectedDebugAndroidTest exit=%s (124=timeout)\\n' "$result" | tee native/target/evidence/android-emulator-result.txt
-            exit "$result"
+          script: bash native/scripts/test-android-emulator.sh
       - name: Package exact tracked source and resolved dependency identity
         if: always()
         run: python3 native/scripts/package-evidence.py
